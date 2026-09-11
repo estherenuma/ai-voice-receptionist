@@ -74,7 +74,7 @@ The system was designed to handle:
 
 ### Workflow Canvas
 
-![AI Voice Receptionist workflow](screenshots/workflow-canvas.jpeg)
+![AI Voice Receptionist workflow](workflow-canvas.jpeg)
 
 
 ## Demo
