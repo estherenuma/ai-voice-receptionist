@@ -1,0 +1,657 @@
+{
+  "name": "Voice-Receptionist",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "c41c558e-0c9b-43e6-8e92-7872b34551e6",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -448,
+        288
+      ],
+      "id": "939fbf51-8274-42f4-934c-617ed76c0393",
+      "name": "Webhook",
+      "webhookId": "c41c558e-0c9b-43e6-8e92-7872b34551e6"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.message.toolCalls[0].function.name }}",
+                    "rightValue": "checkAvailability",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "0982be00-56ef-4f6c-b683-15e58da20835"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Availability"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "82dc72f0-e736-4d0d-a550-bb8e57759687",
+                    "leftValue": "={{ $json.body.message.toolCalls[0].function.name }}",
+                    "rightValue": "bookAppointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Booking"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "fdde98ee-c366-4a22-bd17-148dd42cf275",
+                    "leftValue": "={{ $json.body.message.toolCalls[0].function.name }}",
+                    "rightValue": "requestCallback",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Callback"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -224,
+        256
+      ],
+      "id": "8e6516cf-effc-4201-83eb-5fec39804022",
+      "name": "Route by tool name"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        },
+        "returnAll": true,
+        "timeMin": "={{ $json.windowStart }}",
+        "timeMax": "={{ $json.windowEnd }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        0
+      ],
+      "id": "98301969-c782-43ce-bfa8-8c7306360c14",
+      "name": "Read the day's bookings",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find three free slots — Bright Smile Dental\n// Input:  \"Read the tool call\" + \"Read the day's bookings\"\n// Output: { results: [ { toolCallId, result } ] }\n\nconst TZ = 'America/Denver';\nconst SLOT_MINUTES = 30;\nconst BUFFER_MINUTES = 15;\nconst MAX_OPTIONS = 3;\n\n// Opening hours, keyed by Luxon weekday: 1 = Monday ... 7 = Sunday.\n// null means closed. This is the ONLY place hours are defined.\nconst HOURS = {\n  1: { open: 9, close: 17 },\n  2: { open: 9, close: 17 },\n  3: { open: 9, close: 17 },\n  4: { open: 9, close: 17 },\n  5: { open: 9, close: 17 },\n  6: { open: 9, close: 16 },   // Saturday — confirmed 9am to 4pm\n  7: null                       // Sunday — closed\n};\n\nconst tc = $('Read the tool call').first().json;\nconst toolCallId = tc.toolCallId;\nconst requested = DateTime.fromISO(tc.requestedIso, { zone: TZ });\n\nconst reply = (sentence) => [\n  { json: { results: [{ toolCallId, result: sentence }] } }\n];\n\n// --- Guard 1: no usable date -------------------------------------------\nif (!requested.isValid) {\n  return reply('I did not catch which day you meant. Which day would suit you?');\n}\n\nconst now = DateTime.now().setZone(TZ);\nconst todayStart = now.startOf('day');\n\n// --- Guard 2: the date has already passed ------------------------------\nif (requested < todayStart) {\n  return reply('That date has already passed. Which upcoming day would suit you?');\n}\n\n// --- Guard 3: the clinic is closed that day ----------------------------\nconst hours = HOURS[requested.weekday];\nif (!hours) {\n  return reply('We are closed on ' + requested.toFormat('cccc') + 's. Which other day suits you?');\n}\n\n// --- Build the busy list from the calendar -----------------------------\nconst events = $('Read the day\\'s bookings').all().map(i => i.json);\nconst busy = [];\n\nfor (const ev of events) {\n  if (!ev || ev.status === 'cancelled') continue;\n\n  const s = ev.start || {};\n  const e = ev.end || {};\n  let startAt, endAt;\n\n  if (s.dateTime) {\n    startAt = DateTime.fromISO(s.dateTime, { zone: TZ });\n    endAt = DateTime.fromISO(e.dateTime, { zone: TZ });\n  } else if (s.date) {\n    // All-day event: blocks the entire working day\n    startAt = requested.set({ hour: hours.open, minute: 0 }).startOf('minute');\n    endAt = requested.set({ hour: hours.close, minute: 0 }).startOf('minute');\n  } else {\n    continue;\n  }\n\n  if (!startAt.isValid || !endAt.isValid) continue;\n\n  busy.push({\n    start: startAt.minus({ minutes: BUFFER_MINUTES }),\n    end: endAt.plus({ minutes: BUFFER_MINUTES })\n  });\n}\n\n// --- Walk the day in slots ---------------------------------------------\nconst dayOpen = requested.set({ hour: hours.open, minute: 0, second: 0, millisecond: 0 });\nconst dayClose = requested.set({ hour: hours.close, minute: 0, second: 0, millisecond: 0 });\n\nconst free = [];\nfor (let s = dayOpen; s < dayClose; s = s.plus({ minutes: SLOT_MINUTES })) {\n  const e = s.plus({ minutes: SLOT_MINUTES });\n  if (e > dayClose) break;\n  if (s <= now) continue;                       // never offer a time already gone\n  const clash = busy.some(b => s < b.end && e > b.start);\n  if (!clash) free.push(s);\n}\n\nif (free.length === 0) {\n  return reply('I have nothing left that day. Would another day work?');\n}\n\n// Prefer slots at or after the time they asked for; fall back to the whole day\nconst atOrAfter = free.filter(s => s >= requested);\nconst usedFallback = atOrAfter.length === 0;\nconst chosen = (usedFallback ? free : atOrAfter).slice(0, MAX_OPTIONS);\n\n// --- Say it like a person ---------------------------------------------\nconst ordinal = (n) => {\n  const r10 = n % 10, r100 = n % 100;\n  if (r10 === 1 && r100 !== 11) return n + 'st';\n  if (r10 === 2 && r100 !== 12) return n + 'nd';\n  if (r10 === 3 && r100 !== 13) return n + 'rd';\n  return n + 'th';\n};\n\nconst isNoon = (d) => d.hour === 12 && d.minute === 0;\nconst clock  = (d) => (d.minute === 0 ? d.toFormat('h') : d.toFormat('h:mm'));\nconst span   = (d) => (d.hour < 12 ? 'in the morning' : 'in the afternoon');\n\n// Only name morning/afternoon on the last time of each run, so it reads as\n// \"9, 9:30, or 10 in the morning\" rather than repeating it three times.\nconst parts = [];\nchosen.forEach((d, idx) => {\n  const next = chosen[idx + 1];\n  const lastOfRun = !next || isNoon(next) || span(next) !== span(d);\n  if (isNoon(d)) {\n    parts.push('12 noon');\n  } else {\n    parts.push(lastOfRun ? clock(d) + ' ' + span(d) : clock(d));\n  }\n});\n\nlet timeList;\nif (parts.length === 1) {\n  timeList = parts[0];\n} else if (parts.length === 2) {\n  timeList = parts[0] + ' or ' + parts[1];\n} else {\n  timeList = parts.slice(0, -1).join(', ') + ', or ' + parts[parts.length - 1];\n}\n\nconst dayPhrase = requested.toFormat('cccc') + ' the ' + ordinal(requested.day);\n\nlet spoken;\nif (usedFallback) {\n  spoken = 'I have nothing left at that time, but I do have ' + dayPhrase + ' at ' + timeList + '.';\n} else if (chosen.length === 1) {\n  spoken = 'I have one time left on ' + dayPhrase + ': ' + timeList + '.';\n} else {\n  spoken = 'I have ' + dayPhrase + ' at ' + timeList + '.';\n}\n\nreturn reply(spoken);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "7012ea6e-e733-4c83-bfc1-d42f2966d497",
+      "name": "Find three free slots"
+    },
+    {
+      "parameters": {
+        "jsCode": "const call = $json.body.message.toolCalls[0];\nconst args = call.function[\"arguments\"];\n\nconst requested = new Date(args.initialSearchDateTime);\n\nconst windowStart = new Date(requested);\nwindowStart.setHours(0, 0, 0, 0);\n\nconst windowEnd = new Date(windowStart);\nwindowEnd.setDate(windowEnd.getDate() + 1);\n\nreturn [\n  {\n    json: {\n      toolCallId: call.id,\n      toolName: call.function.name,\n      requestedIso: args.initialSearchDateTime,\n      windowStart: windowStart.toISOString(),\n      windowEnd: windowEnd.toISOString()\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "34ddf9b4-9734-4bf5-aee9-072f352fd402",
+      "name": "Read the tool call"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        672,
+        0
+      ],
+      "id": "6a039f61-8404-4ada-9715-6dd886a6312a",
+      "name": "Return slots to Vapi"
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "90ab87b5e34247bc9d8f112907afe02fb34950c7d3bfc76da75c78729159650e@group.calendar.google.com",
+          "mode": "list",
+          "cachedResultName": "Demo Clinic Bookings"
+        },
+        "start": "={{ $json.startDateTime }}",
+        "end": "={{ $json.endDateTime }}",
+        "additionalFields": {
+          "description": "={{ $json.description }}",
+          "summary": "={{ $json.summary }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        192
+      ],
+      "id": "42e0276d-3222-462d-be42-0d62607561d3",
+      "name": "Create the appointment",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "HaalVffsgIAvmTtG",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1mIDdmVLnxPwE6UUGdVMTenh5IOZxflcy4gfzyGBT1UY",
+          "mode": "list",
+          "cachedResultName": "Demo Ops Data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mIDdmVLnxPwE6UUGdVMTenh5IOZxflcy4gfzyGBT1UY/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Voice calls",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mIDdmVLnxPwE6UUGdVMTenh5IOZxflcy4gfzyGBT1UY/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "caller_name": "={{ $('Read the booking request').item.json.clientName }}",
+            "phone": "={{ $('Read the booking request').item.json.phone }}",
+            "booked_time": "={{ $('Read the booking request').item.json.booked_time }}",
+            "new_or_existing": "={{ $('Read the booking request').item.json.new_or_existing }}",
+            "reason": "={{ $('Read the booking request').item.json.summary }}",
+            "urgency": "={{ $('Read the booking request').item.json.urgency }}",
+            "outcome": "={{ $('Read the booking request').item.json.outcome }}",
+            "timestamp": "={{ $('Read the booking request').item.json.timestamp }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "caller_name",
+              "displayName": "caller_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reason",
+              "displayName": "reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency",
+              "displayName": "urgency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "new_or_existing",
+              "displayName": "new_or_existing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "booked_time",
+              "displayName": "booked_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "outcome",
+              "displayName": "outcome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        448,
+        192
+      ],
+      "id": "ee0c835b-9151-4ccb-96ad-7182e367faa9",
+      "name": "Log the call",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "HOHvJ0rC3ECJaOZA",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const call = $json.body.message.toolCalls[0];\nconst args = call.function[\"arguments\"];\n\nconst nowIso = new Date().toISOString();\n\nreturn [\n  {\n    json: {\n      toolCallId: call.id,\n      startDateTime: args.startDateTime,\n      endDateTime: args.endDateTime,\n      clientName: args.clientName,\n      phone: args.phone,\n      serviceType: args.serviceType,\n      summary: args.clientName + ' — ' + args.serviceType,\n      description: 'Booked by Ava, the AI receptionist.'\n        + '\\nCallback number: ' + args.phone\n        + '\\nService: ' + args.serviceType,\n\n      timestamp: nowIso,\n      caller_name: args.clientName,\n      reason: args.reason || args.serviceType,\n      urgency: args.urgency || 'routine',\n      new_or_existing: args.newOrExisting || 'unknown',\n      booked_time: args.startDateTime,\n      outcome: 'booked'\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        192
+      ],
+      "id": "21d5ddf0-3fd8-4712-bfb3-d660692ec903",
+      "name": "Read the booking request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const booking = $('Read the booking request').first().json;\n\nconst when = DateTime.fromISO(booking.startDateTime, { zone: 'America/Denver' });\n\nfunction ordinal(n) {\n  if (n > 3 && n < 21) return n + 'th';\n  if (n % 10 === 1) return n + 'st';\n  if (n % 10 === 2) return n + 'nd';\n  if (n % 10 === 3) return n + 'rd';\n  return n + 'th';\n}\n\nconst clock = when.minute === 0 ? when.toFormat('h') : when.toFormat('h:mm');\nconst partOfDay = when.hour < 12 ? 'in the morning' : 'in the afternoon';\n\nconst spoken = 'You are booked in for ' + when.toFormat('cccc')\n  + ', ' + when.toFormat('LLLL') + ' ' + ordinal(when.day)\n  + ', at ' + clock + ' ' + partOfDay\n  + '. You will get a text confirmation shortly.';\n\nreturn [\n  {\n    json: {\n      results: [\n        {\n          toolCallId: booking.toolCallId,\n          result: spoken\n        }\n      ]\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        192
+      ],
+      "id": "ad419727-50bc-485d-8c21-ef4680a99315",
+      "name": "Build the booking reply"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        896,
+        192
+      ],
+      "id": "af0a289b-3bb6-4fdb-ac8b-f44fd644d3a2",
+      "name": "Confirm booking to Vapi"
+    },
+    {
+      "parameters": {
+        "jsCode": "const call = $json.body.message.toolCalls[0];\n\nconst spoken = 'I cannot do that part myself, but I can take your number and have the office call you back within the hour.';\n\nreturn [\n  {\n    json: {\n      results: [\n        {\n          toolCallId: call.id,\n          result: spoken\n        }\n      ]\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        576
+      ],
+      "id": "4ee07078-5599-4cc5-80fa-cb981337b912",
+      "name": "Build the fallback reply"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        224,
+        576
+      ],
+      "id": "a7a4bbb3-4047-4bb9-ba3b-55d7f2a9a4cc",
+      "name": "Return fallback to Vapi"
+    },
+    {
+      "parameters": {
+        "jsCode": "const call = $json.body.message.toolCalls[0];\nconst args = call.function[\"arguments\"] || {};\n\nconst preferred = [args.preferredDay, args.preferredTime].filter(Boolean).join(' ');\n\nreturn [{\n  json: {\n    toolCallId: call.id,\n    timestamp: DateTime.now().setZone('America/Denver').toFormat('yyyy-LL-dd HH:mm:ss'),\n    caller_name: args.clientName || '',\n    phone: String(args.phone || ''),\n    reason: args.reason || '',\n    urgency: args.urgency || 'routine',\n    new_or_existing: args.newOrExisting || '',\n    booked_time: preferred ? 'wanted: ' + preferred : '',\n    outcome: 'callback_requested'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        384
+      ],
+      "id": "a51800db-c4f5-46fb-840a-7762dd22aa35",
+      "name": "Read the callback request"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        448,
+        384
+      ],
+      "id": "f81ef9cb-be73-4c2c-bd8c-1838da628161",
+      "name": "Return callback to Vapi"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        384
+      ],
+      "id": "27fc3c78-1464-4f99-8e0e-64275689c88d",
+      "name": "Append row in sheet"
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "content-type": "application/json"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "message": {
+              "type": "tool-calls",
+              "toolCalls": [
+                {
+                  "id": "call_cb_test_1",
+                  "type": "function",
+                  "function": {
+                    "name": "requestCallback",
+                    "arguments": {
+                      "clientName": "Judith Baker",
+                      "phone": "7051276000",
+                      "reason": "cleaning",
+                      "preferredDay": "Saturday",
+                      "preferredTime": "afternoon",
+                      "newOrExisting": "new",
+                      "urgency": "routine",
+                      "failureReason": "schedule tool unreachable"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "executionMode": "test"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Route by tool name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by tool name": {
+      "main": [
+        [
+          {
+            "node": "Read the tool call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read the booking request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read the callback request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build the fallback reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the day's bookings": {
+      "main": [
+        [
+          {
+            "node": "Find three free slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the tool call": {
+      "main": [
+        [
+          {
+            "node": "Read the day's bookings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find three free slots": {
+      "main": [
+        [
+          {
+            "node": "Return slots to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create the appointment": {
+      "main": [
+        [
+          {
+            "node": "Log the call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log the call": {
+      "main": [
+        [
+          {
+            "node": "Build the booking reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the booking request": {
+      "main": [
+        [
+          {
+            "node": "Create the appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the booking reply": {
+      "main": [
+        [
+          {
+            "node": "Confirm booking to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the fallback reply": {
+      "main": [
+        [
+          {
+            "node": "Return fallback to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the callback request": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Return callback to Vapi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "7c2870d2-b936-46c6-9e13-b2b1481dbecb",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "de47d2a38a5bcd8d7f4a926f59575325c0883ef65b7837964085dfbbfa8fbbcb"
+  },
+  "nodeGroups": [],
+  "id": "1fGvRBtx0ROY6xCy",
+  "tags": []
+}
