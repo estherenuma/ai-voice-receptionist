@@ -74,7 +74,7 @@ The system was designed to handle:
 
 ### Workflow Canvas
 
-![AI Voice Receptionist workflow](screenshots/workflow-canvas.png)
+![AI Voice Receptionist workflow](screenshots/workflow-canvas.jpeg)
 
 
 ## Demo
@@ -84,7 +84,7 @@ Recorded walkthrough coming shortly.
 ## Repository Contents
 
 - `voice-receptionist.json` — sanitised n8n workflow export
-- `screenshots/workflow-canvas.png` — workflow architecture
+- `screenshots/workflow-canvas.jpeg` — workflow architecture
 
 ## Security
 
